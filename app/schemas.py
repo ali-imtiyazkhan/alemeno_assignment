@@ -20,6 +20,7 @@ class JobStatusOut(BaseModel):
     id: int
     status: str
     summary: Optional[dict] = None
+    error_message: Optional[str] = None
 
 
 class TransactionOut(BaseModel):
@@ -36,6 +37,22 @@ class TransactionOut(BaseModel):
     llm_category: Optional[str] = None
 
     model_config = {"from_attributes": True}
+
+    @classmethod
+    def from_txn(cls, txn):
+        return cls(
+            txn_id=txn.txn_id,
+            date=txn.date.isoformat() if txn.date else None,
+            merchant=txn.merchant,
+            amount=txn.amount,
+            currency=txn.currency,
+            status=txn.status,
+            category=txn.category,
+            account_id=txn.account_id,
+            is_anomaly=bool(txn.is_anomaly),
+            anomaly_reason=txn.anomaly_reason,
+            llm_category=txn.llm_category,
+        )
 
 
 class CategorySpend(BaseModel):

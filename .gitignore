@@ -30,3 +30,7 @@ Thumbs.db
 test_transactions.db
 .pytest_cache/
 
+# Debug
+check_results.py
+test_e2e.py
+

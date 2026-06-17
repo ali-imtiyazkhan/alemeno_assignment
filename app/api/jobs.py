@@ -57,7 +57,7 @@ def get_job_status(job_id: int, db: Session = Depends(get_db)):
     if not job:
         raise HTTPException(404, detail="Job not found")
 
-    result = JobStatusOut(id=job.id, status=job.status)
+    result = JobStatusOut(id=job.id, status=job.status, error_message=job.error_message)
     if job.status == "completed":
         summary = db.query(JobSummary).filter(
             JobSummary.job_id == job_id
@@ -110,8 +110,8 @@ def get_job_results(job_id: int, db: Session = Depends(get_db)):
         )
 
     return JobResultsOut(
-        transactions=[TransactionOut.model_validate(t) for t in txns],
-        anomalies=[TransactionOut.model_validate(t) for t in anomalies],
+        transactions=[TransactionOut.from_txn(t) for t in txns],
+        anomalies=[TransactionOut.from_txn(t) for t in anomalies],
         category_spend=[CategorySpend(**c) for c in cat_spend_map.values()],
         narrative_summary=narrative,
     )

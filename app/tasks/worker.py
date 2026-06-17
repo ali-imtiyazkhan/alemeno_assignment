@@ -14,3 +14,5 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
 )
+
+import app.tasks.processing  # noqa: F401 — register tasks

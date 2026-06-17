@@ -146,31 +146,44 @@ def batch_classify(df_uncategorized, llm):
     return mapping
 
 
-def generate_narrative_summary(df, anomaly_count, llm):
-    if llm is None:
-        return {
-            "total_spend_inr": 0,
-            "total_spend_usd": 0,
-            "top_merchants": [],
-            "anomaly_count": anomaly_count,
-            "narrative": "",
-            "risk_level": "low",
-        }
+def _to_native(val):
+    if hasattr(val, "item"):
+        return val.item()
+    if isinstance(val, (float, int)):
+        return val
+    return float(val) if val else 0
 
-    total_inr = df[df["currency"] == "INR"]["amount"].sum()
-    total_usd = df[df["currency"] == "USD"]["amount"].sum()
-    top_merchants = (
+
+def generate_narrative_summary(df, anomaly_count, llm):
+    total_inr = _to_native(df[df["currency"] == "INR"]["amount"].sum())
+    total_usd = _to_native(df[df["currency"] == "USD"]["amount"].sum())
+    top_merchants_dict = (
         df.groupby("merchant")["amount"]
         .sum()
         .nlargest(3)
         .to_dict()
     )
+    top_merchants_list = list(top_merchants_dict.keys())
+    total_inr_val = _to_native(round(total_inr, 2)) if total_inr else 0.0
+    total_usd_val = _to_native(round(total_usd, 2)) if total_usd else 0.0
+
+    result = {
+        "total_spend_inr": total_inr_val,
+        "total_spend_usd": total_usd_val,
+        "top_merchants": top_merchants_list,
+        "anomaly_count": anomaly_count,
+        "narrative": "",
+        "risk_level": "low",
+    }
+
+    if llm is None:
+        return result
 
     prompt = (
         "You are a financial analyst. Based on these transaction statistics, produce a JSON summary.\n"
-        f"Total spend in INR: {total_inr:.2f}\n"
-        f"Total spend in USD: {total_usd:.2f}\n"
-        f"Top 3 merchants: {json.dumps(top_merchants)}\n"
+        f"Total spend in INR: {total_inr_val:.2f}\n"
+        f"Total spend in USD: {total_usd_val:.2f}\n"
+        f"Top 3 merchants: {json.dumps(top_merchants_dict)}\n"
         f"Number of flagged anomalies: {anomaly_count}\n"
         "Return a JSON object with:\n"
         '- "narrative": a 2-3 sentence spending analysis\n'
@@ -180,15 +193,9 @@ def generate_narrative_summary(df, anomaly_count, llm):
 
     text = call_llm_with_retry(llm, prompt)
     llm_data = extract_json(text) or {}
-
-    return {
-        "total_spend_inr": round(total_inr, 2) if not pd.isna(total_inr) else 0,
-        "total_spend_usd": round(total_usd, 2) if not pd.isna(total_usd) else 0,
-        "top_merchants": list(top_merchants.keys()),
-        "anomaly_count": anomaly_count,
-        "narrative": llm_data.get("narrative", ""),
-        "risk_level": llm_data.get("risk_level", "low"),
-    }
+    result["narrative"] = llm_data.get("narrative", "")
+    result["risk_level"] = llm_data.get("risk_level", "low")
+    return result
 
 
 def save_transactions(db: Session, job_id: int, df):
@@ -198,7 +205,7 @@ def save_transactions(db: Session, job_id: int, df):
             txn_id=row.get("txn_id") if pd.notna(row.get("txn_id")) else None,
             date=row["date"],
             merchant=row.get("merchant"),
-            amount=row["amount"],
+            amount=_to_native(row["amount"]),
             currency=row["currency"],
             status=row["status"],
             category=row.get("category"),
