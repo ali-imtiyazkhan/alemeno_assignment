@@ -97,7 +97,7 @@ def get_llm():
     if not key:
         return None
     genai.configure(api_key=key)
-    return genai.GenerativeModel("gemini-1.5-flash")
+    return genai.GenerativeModel("gemini-flash-latest")
 
 
 def call_llm_with_retry(llm, prompt, max_retries=3):
