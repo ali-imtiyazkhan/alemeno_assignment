@@ -25,3 +25,8 @@ uploads/
 # OS
 .DS_Store
 Thumbs.db
+
+# Tests
+test_transactions.db
+.pytest_cache/
+
