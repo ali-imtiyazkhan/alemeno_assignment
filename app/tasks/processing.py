@@ -3,7 +3,7 @@ import re
 import json
 import time
 import pandas as pd
-import google.generativeai as genai
+from google import genai
 from datetime import datetime
 from sqlalchemy.orm import Session
 from app.database import SessionLocal
@@ -38,8 +38,9 @@ def clean_data(df):
         df["amount"]
         .astype(str)
         .str.replace("$", "", regex=False)
-        .astype(float)
+        .str.replace(",", "", regex=False)
     )
+    df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0.0)
     df["currency"] = df["currency"].str.upper()
     df["status"] = df["status"].str.upper()
     df["category"] = df["category"].fillna("Uncategorised")
@@ -96,26 +97,27 @@ def get_llm():
     key = settings.GEMINI_API_KEY
     if not key:
         return None
-    genai.configure(api_key=key)
-    return genai.GenerativeModel("gemini-flash-latest")
+    return genai.Client(api_key=key)
 
 
 def call_llm_with_retry(llm, prompt, max_retries=3):
     for attempt in range(max_retries):
         try:
-            resp = llm.generate_content(prompt)
+            resp = llm.models.generate_content(
+                model="gemini-flash-latest",
+                contents=prompt,
+            )
             return resp.text
         except Exception as e:
             if attempt < max_retries - 1:
                 time.sleep(2 ** attempt)
             else:
                 raise
-    return None
 
 
 def batch_classify(df_uncategorized, llm):
     if df_uncategorized.empty or llm is None:
-        return {}
+        return {}, None
 
     txns_lines = []
     for i, row in df_uncategorized.iterrows():
@@ -135,7 +137,7 @@ def batch_classify(df_uncategorized, llm):
     text = call_llm_with_retry(llm, prompt)
     results = extract_json(text)
     if not isinstance(results, list):
-        return {}
+        return {}, text
 
     mapping = {}
     for item in results:
@@ -143,7 +145,7 @@ def batch_classify(df_uncategorized, llm):
         cat = item.get("category")
         if idx is not None and cat in CATEGORIES:
             mapping[idx] = cat
-    return mapping
+    return mapping, text
 
 
 def _to_native(val):
@@ -213,6 +215,7 @@ def save_transactions(db: Session, job_id: int, df):
             is_anomaly=row.get("is_anomaly", False),
             anomaly_reason=row.get("anomaly_reason") or None,
             llm_category=row.get("llm_category") or None,
+            llm_raw_response=row.get("llm_raw_response") or None,
             llm_failed=row.get("llm_failed", False),
         )
         db.add(txn)
@@ -250,19 +253,23 @@ def process_job(self, job_id: int):
         df_uncat = df_clean[uncat_mask].copy()
 
         llm_mapping = {}
+        llm_raw_text = None
         if not df_uncat.empty:
             try:
-                llm_mapping = batch_classify(df_uncat, llm)
+                llm_mapping, llm_raw_text = batch_classify(df_uncat, llm)
             except Exception:
                 pass
 
         df_clean["llm_category"] = None
         df_clean["llm_failed"] = False
+        df_clean["llm_raw_response"] = None
         for idx, row in df_uncat.iterrows():
             cat = llm_mapping.get(idx)
             if cat:
                 df_clean.at[idx, "llm_category"] = cat
                 df_clean.at[idx, "category"] = cat
+                if llm_raw_text:
+                    df_clean.at[idx, "llm_raw_response"] = llm_raw_text
             else:
                 df_clean.at[idx, "llm_failed"] = True
 
@@ -289,10 +296,13 @@ def process_job(self, job_id: int):
 
     except Exception as e:
         db.rollback()
-        job = db.query(Job).filter(Job.id == job_id).first()
-        if job:
-            job.status = "failed"
-            job.error_message = str(e)
-            db.commit()
+        try:
+            job = db.query(Job).filter(Job.id == job_id).first()
+            if job:
+                job.status = "failed"
+                job.error_message = str(e)
+                db.commit()
+        except Exception:
+            db.rollback()
     finally:
         db.close()

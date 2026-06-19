@@ -34,6 +34,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    env_file: .env
     environment:
       DATABASE_URL: postgresql://user:password@postgres/transactions
       REDIS_URL: redis://redis:6379/0
@@ -49,6 +50,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    env_file: .env
     environment:
       DATABASE_URL: postgresql://user:password@postgres/transactions
       REDIS_URL: redis://redis:6379/0
