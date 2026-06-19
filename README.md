@@ -6,28 +6,28 @@ A backend API that accepts dirty CSV transaction data, processes it asynchronous
 
 ## System Architecture
 
-```
-┌──────────────┐     ┌──────────────────────────────────────────────────────┐
-│   Client     │     │                  Docker Compose                      │
-│  (curl/Post) │     │                                                      │
-│              │     │  ┌──────────┐    ┌──────────────┐    ┌────────────┐  │
-│   POST/GET   │────▶│  │   API    │───▶│   Worker     │───▶│   LLM     │  │
-│              │     │  │  FastAPI │    │  (Celery)    │    │  (Gemini)  │  │
-└──────────────┘     │  └────┬─────┘    └──────┬───────┘    └────────────┘  │
-                     │       │                  │                           │
-                     │       │           ┌──────┴───────┐                   │
-                     │       │           │    Redis     │  (Message Queue)  │
-                     │       │           └──────────────┘                   │
-                     │       │                                             │
-                     │  ┌────┴──────────────────┐                          │
-                     │  │     PostgreSQL         │                          │
-                     │  │  ┌──────────────────┐ │                          │
-                     │  │  │   jobs           │ │                          │
-                     │  │  │   transactions   │ │                          │
-                     │  │  │   job_summaries  │ │                          │
-                     │  │  └──────────────────┘ │                          │
-                     │  └───────────────────────┘                          │
-                     └──────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    Client[Client<br/>curl / Postman]
+    
+    subgraph Docker["Docker Compose Environment"]
+        API[API Server<br/>FastAPI :8000]
+        Worker[Celery Worker]
+        Redis[Redis<br/>Message Queue]
+        DB[PostgreSQL<br/>Database]
+        LLM[Gemini LLM]
+    end
+
+    Client -- POST /jobs/upload --> API
+    Client -- GET /jobs, /status, /results --> API
+    
+    API -- Enqueue task --> Redis
+    Redis -- Dequeue task --> Worker
+    
+    Worker -- Read/Write --> DB
+    Worker -- LLM classify & summary --> LLM
+    
+    API -- Read --> DB
 ```
 
 ### Containers (Docker Compose Services)
@@ -43,52 +43,50 @@ A backend API that accepts dirty CSV transaction data, processes it asynchronous
 
 ## Database Schema (ERD)
 
-```
- ┌──────────────────────┐
- │         Job          │
- ├──────────────────────┤
- │ id (PK)              │──────────┐
- │ filename             │          │
- │ status               │          │
- │ row_count_raw        │          │
- │ row_count_clean      │          │
- │ created_at           │          │
- │ completed_at         │          │
- │ error_message        │          │
- └──────────────────────┘          │
-                                   │
- ┌──────────────────────────┐      │
- │      Transaction         │      │
- ├──────────────────────────┤      │
- │ id (PK)                  │      │
- │ job_id (FK → Job.id)     │◀─────┘
- │ txn_id                   │
- │ date                     │
- │ merchant                 │
- │ amount                   │
- │ currency                 │
- │ status                   │
- │ category                 │
- │ account_id               │
- │ is_anomaly               │
- │ anomaly_reason           │
- │ llm_category             │
- │ llm_raw_response         │
- │ llm_failed               │
- └──────────────────────────┘
+```mermaid
+erDiagram
+    Job ||--o{ Transaction : has
+    Job ||--o| JobSummary : has
 
- ┌──────────────────────────────┐
- │         JobSummary           │
- ├──────────────────────────────┤
- │ id (PK)                      │
- │ job_id (FK → Job.id, UNIQUE) │◀─────┘
- │ total_spend_inr              │
- │ total_spend_usd              │
- │ top_merchants (JSON)         │
- │ anomaly_count                │
- │ narrative                    │
- │ risk_level                   │
- └──────────────────────────────┘
+    Job {
+        int id PK
+        string filename
+        string status
+        int row_count_raw
+        int row_count_clean
+        datetime created_at
+        datetime completed_at
+        string error_message
+    }
+
+    Transaction {
+        int id PK
+        int job_id FK
+        string txn_id
+        datetime date
+        string merchant
+        float amount
+        string currency
+        string status
+        string category
+        string account_id
+        bool is_anomaly
+        string anomaly_reason
+        string llm_category
+        text llm_raw_response
+        bool llm_failed
+    }
+
+    JobSummary {
+        int id PK
+        int job_id FK
+        float total_spend_inr
+        float total_spend_usd
+        json top_merchants
+        int anomaly_count
+        text narrative
+        string risk_level
+    }
 ```
 
 **Key relationships:**
@@ -101,56 +99,95 @@ A backend API that accepts dirty CSV transaction data, processes it asynchronous
 
 ### 1. Upload CSV → `POST /jobs/upload`
 
-```
-Client                API                  DB               Redis
-  │                    │                   │                 │
-  │── POST /jobs/upload ──▶                │                 │
-  │   (multipart CSV)   │                   │                 │
-  │                     │── Validate CSV ──▶│                 │
-  │                     │── INSERT Job ────▶│ (status=pending)│
-  │                     │── Save file ─────▶│ (uploads/{id}.csv)
-  │                     │── Enqueue task ──────────────────▶ │
-  │◀─── 201 {job_id} ──│                   │                 │
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API
+    participant DB as PostgreSQL
+    participant Redis
+    participant Worker
+    participant LLM as Gemini
+
+    Note over Client,LLM: Step 1: Upload CSV
+    Client->>API: POST /jobs/upload (multipart CSV)
+    API->>API: Validate CSV format
+    API->>DB: INSERT Job (status=pending)
+    API->>API: Save file to uploads/{id}.csv
+    API->>Redis: Enqueue processing task
+    API-->>Client: 201 { "job_id": 1 }
 ```
 
 ### 2. Worker Processes Job (Async)
 
-```
-Redis                 Worker               DB                LLM
-  │                     │                   │                 │
-  │── Dequeue task ────▶│                   │                 │
-  │                     │── UPDATE status ──▶│ (processing)   │
-  │                     │── Read CSV ──────▶│                 │
-  │                     │                   │                 │
-  │                     │  [Data Cleaning]  │                 │
-  │                     │  [Anomaly Detect] │                 │
-  │                     │                   │                 │
-  │                     │── LLM classify ────────────────────▶│
-  │                     │◀── categories ─────────────────────│
-  │                     │                   │                 │
-  │                     │── LLM summary ────────────────────▶│
-  │                     │◀── narrative ──────────────────────│
-  │                     │                   │                 │
-  │                     │── INSERT txns ───▶│                 │
-  │                     │── INSERT summary ▶│                 │
-  │                     │── UPDATE status ──▶│ (completed)    │
+```mermaid
+sequenceDiagram
+    participant Redis
+    participant Worker
+    participant DB as PostgreSQL
+    participant LLM as Gemini
+
+    Note over Redis,LLM: Step 2: Worker Processing Pipeline
+    Redis->>Worker: Dequeue task
+    Worker->>DB: UPDATE Job (status=processing)
+    Worker->>Worker: Read CSV file
+    Worker->>Worker: a) Data Cleaning
+    Worker->>Worker: b) Anomaly Detection
+    Worker->>LLM: c) Batch classify uncategorised
+    LLM-->>Worker: Category mapping
+    Worker->>LLM: d) Narrative summary
+    LLM-->>Worker: Narrative & risk level
+    Worker->>DB: INSERT transactions
+    Worker->>DB: INSERT job_summary
+    Worker->>DB: UPDATE Job (status=completed)
 ```
 
 ### 3. Poll Results → `GET /jobs/{id}/status` & `/results`
 
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API
+    participant DB as PostgreSQL
+
+    Note over Client,DB: Step 3: Poll Results
+    Client->>API: GET /jobs/1/status
+    API->>DB: SELECT Job WHERE id=1
+    DB-->>API: {status, completed_at, error}
+    alt completed
+        API->>DB: SELECT job_summary WHERE job_id=1
+        DB-->>API: summary stats
+    end
+    API-->>Client: {status, summary}
+
+    Client->>API: GET /jobs/1/results
+    API->>DB: SELECT transactions WHERE job_id=1
+    DB-->>API: all transaction rows
+    API->>DB: SELECT job_summary WHERE job_id=1
+    DB-->>API: narrative summary
+    API-->>Client: {transactions, anomalies, category_spend, narrative_summary}
 ```
-Client                API                  DB
-  │                     │                   │
-  │── GET /jobs/1/status ──▶                │
-  │                     │── SELECT Job ────▶│
-  │◀── {status, summary}─│                   │
-  │                     │                   │
-  │── GET /jobs/1/results──▶                │
-  │                     │── SELECT Txns ───▶│
-  │                     │── SELECT Summary ▶│
-  │◀── {txns, anomalies, category_spend,   │
-  │      narrative_summary}                 │
-```
+
+---
+
+## End-to-End Workflow
+
+### 1. Client Uploads CSV
+The user sends a CSV file via `POST /jobs/upload`. The FastAPI server validates the file extension (.csv) and parses it to ensure it's a valid CSV. A `Job` record is created in PostgreSQL with status `pending`, the original CSV is saved to `uploads/{job_id}.csv`, and a Celery task is enqueued to Redis. The job ID is returned immediately — no blocking.
+
+### 2. Celery Worker Dequeues & Processes
+The Celery worker picks up the task from Redis and begins the 5-step pipeline:
+
+- **Data Cleaning** — Normalises dates (DD-MM-YYYY, YYYY/MM/DD → ISO 8601), strips `$` from amounts, uppercases currency/status, fills blank categories with `"Uncategorised"`, and removes exact duplicate rows.
+- **Anomaly Detection** — Flags transactions where amount > 3x the account median and flags USD transactions at domestic-only merchants (Swiggy, Ola, IRCTC).
+- **LLM Classification** — Sends all uncategorised transactions in one batch to Gemini. Gemini returns a JSON mapping of row index → category. Failed classifications are marked `llm_failed` and the job continues.
+- **Narrative Summary** — Sends aggregate stats (total spend by currency, top 3 merchants, anomaly count) to Gemini. Gemini returns a 2-3 sentence spending narrative and a risk level.
+- **Persistence** — All cleaned transactions, the narrative summary, and the final `completed` status are saved to PostgreSQL.
+
+### 3. Client Polls for Results
+The client polls `GET /jobs/{id}/status` until status is `completed`. Once done, `GET /jobs/{id}/results` returns the full structured output: cleaned transactions, flagged anomalies, per-category spend breakdown, and the LLM-generated narrative summary.
+
+### 4. Retry & Error Handling
+LLM calls retry up to 3 times with exponential backoff (2s, 4s, 8s). If all retries fail, the batch is marked `llm_failed` and the pipeline continues — LLM failures never fail the entire job. Other errors (file not found, DB issues) mark the job as `failed` with the error message stored.
 
 ---
 
