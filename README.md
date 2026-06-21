@@ -41,6 +41,32 @@ graph TD
 
 ---
 
+## All Commands at a Glance
+
+Copy-paste these in order for the video demo:
+
+```bash
+# 1. Start all services
+docker compose up --build
+
+# 2. Upload sample CSV (run in a new terminal)
+curl.exe -X POST http://localhost:8000/jobs/upload -F "file=@transactions.csv"
+
+# 3. Poll status until "completed"
+curl.exe http://localhost:8000/jobs/1/status
+
+# 4. Get full results (cleaned data, anomalies, AI summary)
+curl.exe http://localhost:8000/jobs/1/results
+
+# 5. List all jobs
+curl.exe http://localhost:8000/jobs
+
+# 6. Run tests (without Docker)
+pytest tests/ -v
+```
+
+---
+
 ## Database Schema (ERD)
 
 ```mermaid
@@ -234,8 +260,7 @@ When a job is dequeued from Redis, the Celery worker executes these steps **in o
 Accepts a CSV file, validates it, creates a Job record, enqueues the processing task.
 
 ```bash
-curl -X POST http://localhost:8000/jobs/upload \
-  -F "file=@transactions.csv"
+curl.exe -X POST http://localhost:8000/jobs/upload -F "file=@transactions.csv"
 ```
 
 **Response** `201 Created`
@@ -249,7 +274,7 @@ curl -X POST http://localhost:8000/jobs/upload \
 Returns the current status of the job.
 
 ```bash
-curl http://localhost:8000/jobs/1/status
+curl.exe http://localhost:8000/jobs/1/status
 ```
 
 **Response (pending):**
@@ -288,7 +313,7 @@ curl http://localhost:8000/jobs/1/status
 Returns the full structured output.
 
 ```bash
-curl http://localhost:8000/jobs/1/results
+curl.exe http://localhost:8000/jobs/1/results
 ```
 
 **Response** `200 OK`
@@ -340,8 +365,8 @@ curl http://localhost:8000/jobs/1/results
 List all jobs with optional status filter.
 
 ```bash
-curl http://localhost:8000/jobs
-curl "http://localhost:8000/jobs?status=completed"
+curl.exe http://localhost:8000/jobs
+curl.exe "http://localhost:8000/jobs?status=completed"
 ```
 
 **Response** `200 OK`
@@ -384,13 +409,13 @@ The API is available at `http://localhost:8000`.
 ### Testing
 ```bash
 # Upload sample data
-curl -X POST http://localhost:8000/jobs/upload -F "file=@transactions.csv"
+curl.exe -X POST http://localhost:8000/jobs/upload -F "file=@transactions.csv"
 
 # Poll until completed
-curl http://localhost:8000/jobs/1/status
+curl.exe http://localhost:8000/jobs/1/status
 
 # Get full results
-curl http://localhost:8000/jobs/1/results
+curl.exe http://localhost:8000/jobs/1/results
 ```
 
 ### Running Unit Tests
